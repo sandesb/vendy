@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import './App.css';
+import { listRecordings, uploadRecording, deleteRecording, getPlaybackUrl } from './lib/vendyRecordingsApi.js';
 
 /** Wait until the script tag has actually finished loading (do not resolve early). */
 function loadScriptOnce(src) {
@@ -54,8 +55,40 @@ export default function App() {
   const [panelOpen, setPanelOpen] = useState(false);
   const [inputMode, setInputMode] = useState('file');
   const [engineReady, setEngineReady] = useState(false);
+  const [recordings, setRecordings] = useState([]);
+  const [recordingsLoading, setRecordingsLoading] = useState(false);
+  const [recordingActive, setRecordingActive] = useState(false);
+  const [uploadingRecording, setUploadingRecording] = useState(false);
+  const [selectedRecordingId, setSelectedRecordingId] = useState(null);
   const refs = useRef({});
   const engineRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const recordChunksRef = useRef([]);
+  const recordStreamRef = useRef(null);
+
+  const refreshRecordings = useCallback(async () => {
+    setRecordingsLoading(true);
+    try {
+      const rows = await listRecordings();
+      setRecordings(rows);
+    } catch (e) {
+      console.error('List recordings failed:', e);
+    } finally {
+      setRecordingsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!started || inputMode !== 'library') return;
+    refreshRecordings();
+  }, [started, inputMode, refreshRecordings]);
+
+  useEffect(() => () => {
+    if (mediaRecorderRef.current?.state === 'recording') {
+      try { mediaRecorderRef.current.stop(); } catch (_) {}
+    }
+    recordStreamRef.current?.getTracks().forEach((t) => t.stop());
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -97,6 +130,78 @@ export default function App() {
       setStarted(true);
     } catch (err) {
       console.error('Initialization failed:', err);
+    }
+  };
+
+  const startMicRecording = async () => {
+    if (recordingActive || !started) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordStreamRef.current = stream;
+      recordChunksRef.current = [];
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+          ? 'audio/webm'
+          : '';
+      const mr = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+      mr.ondataavailable = (e) => {
+        if (e.data.size) recordChunksRef.current.push(e.data);
+      };
+      mr.start(100);
+      mediaRecorderRef.current = mr;
+      setRecordingActive(true);
+    } catch (e) {
+      console.error('Record start failed:', e);
+    }
+  };
+
+  const stopMicRecordingAndUpload = async () => {
+    const mr = mediaRecorderRef.current;
+    if (!mr || mr.state === 'inactive') return;
+    await new Promise((resolve) => {
+      mr.addEventListener('stop', resolve, { once: true });
+      mr.stop();
+    });
+    recordStreamRef.current?.getTracks().forEach((t) => t.stop());
+    recordStreamRef.current = null;
+    mediaRecorderRef.current = null;
+    setRecordingActive(false);
+    const blob = new Blob(recordChunksRef.current, { type: mr.mimeType || 'audio/webm' });
+    recordChunksRef.current = [];
+    setUploadingRecording(true);
+    try {
+      await uploadRecording({
+        blob,
+        title: `Recording ${new Date().toLocaleString()}`,
+      });
+      await refreshRecordings();
+    } catch (e) {
+      console.error('Upload failed:', e);
+    } finally {
+      setUploadingRecording(false);
+    }
+  };
+
+  const handleLoadRecording = async (row) => {
+    if (!engineRef.current) return;
+    try {
+      setSelectedRecordingId(row.id);
+      const url = await getPlaybackUrl(row.storage_path);
+      await engineRef.current.loadAudioFromUrl(url);
+    } catch (e) {
+      console.error('Load recording failed:', e);
+    }
+  };
+
+  const handleDeleteRecording = async (row) => {
+    if (!window.confirm(`Delete "${row.title}"? This cannot be undone.`)) return;
+    try {
+      await deleteRecording(row);
+      if (selectedRecordingId === row.id) setSelectedRecordingId(null);
+      await refreshRecordings();
+    } catch (e) {
+      console.error('Delete failed:', e);
     }
   };
 
@@ -262,6 +367,12 @@ export default function App() {
             >
               🎤 Mic Live
             </button>
+            <button
+              className={`input-tab${inputMode === 'library' ? ' active' : ''}`}
+              onClick={() => { setInputMode('library'); engineRef.current?.setInputMode('library'); }}
+            >
+              Cloud
+            </button>
           </div>
 
           <div className="ctrl-row">
@@ -313,6 +424,63 @@ export default function App() {
               onInput={(e) => engineRef.current?.setRange(e.target.value)}
             />
           </div>
+
+          {inputMode === 'library' && (
+            <div className="library-block">
+              <div className="section-label" style={{ marginTop: 14 }}>// Cloud recordings</div>
+              <div className="library-record-row">
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!started || recordingActive || uploadingRecording}
+                  onClick={startMicRecording}
+                >
+                  ● Rec
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={!recordingActive || uploadingRecording}
+                  onClick={stopMicRecordingAndUpload}
+                >
+                  {uploadingRecording ? 'Uploading…' : '■ Stop & upload'}
+                </button>
+              </div>
+              <p className="library-hint">Initialize the system first. Clips upload to Supabase (klary/vendy).</p>
+              <div className="library-list-wrap">
+                {recordingsLoading && <div className="library-empty">Loading…</div>}
+                {!recordingsLoading && recordings.length === 0 && (
+                  <div className="library-empty">No recordings yet.</div>
+                )}
+                {!recordingsLoading && recordings.map((row) => (
+                  <div
+                    key={row.id}
+                    className={`library-row${selectedRecordingId === row.id ? ' active' : ''}`}
+                  >
+                    <button
+                      type="button"
+                      className="library-title"
+                      onClick={() => handleLoadRecording(row)}
+                      title="Load for pitch playback"
+                    >
+                      {row.title}
+                    </button>
+                    <span className="library-meta">
+                      {row.duration_sec != null ? `${row.duration_sec.toFixed(1)}s · ` : ''}
+                      {new Date(row.created_at).toLocaleDateString()}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-tiny danger"
+                      onClick={() => handleDeleteRecording(row)}
+                    >
+                      Del
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* WAVEFORM */}
@@ -755,6 +923,18 @@ function buildEngine(el) {
       addLog('System online.', 'ok');
     },
 
+    async loadAudioFromUrl(url) {
+      if (!state.audioCtx) throw new Error('Audio context not ready');
+      if (state.isPlaying) stopFile();
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const raw = await resp.arrayBuffer();
+      state.audioBuffer = await state.audioCtx.decodeAudioData(raw.slice(0));
+      state.pauseOffset = 0;
+      addLog(`Clip loaded (${state.audioBuffer.duration.toFixed(1)}s)`, 'ok');
+      setDot(el.dotAudio, 'active');
+    },
+
     togglePlay() {
       if (state.inputMode === 'mic') {
         state.isMicLive ? stopMic() : startMic();
@@ -810,8 +990,8 @@ function buildEngine(el) {
 
     setInputMode(mode) {
       if (mode === state.inputMode) return;
-      if (mode === 'mic' && state.isPlaying) stopFile();
-      if (mode === 'file' && state.isMicLive) stopMic();
+      if ((mode === 'mic') && state.isPlaying) stopFile();
+      if ((mode === 'file' || mode === 'library') && state.isMicLive) stopMic();
       state.inputMode = mode;
       if (mode === 'mic') {
         if (el.playBtn) el.playBtn.textContent = '🎤 Start Mic';
@@ -820,7 +1000,7 @@ function buildEngine(el) {
         if (el.playBtn) el.playBtn.textContent = state.isPlaying ? '⏸ Pause' : '▶ Play';
         if (el.loopBtn) { el.loopBtn.disabled = false; el.loopBtn.style.opacity = ''; }
       }
-      addLog(`Input mode: ${mode.toUpperCase()}`, 'info');
+      addLog(`Input mode: ${mode === 'library' ? 'CLOUD' : mode.toUpperCase()}`, 'info');
     },
 
     destroy() {

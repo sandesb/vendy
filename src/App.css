@@ -400,6 +400,54 @@ header {
 .mode-tab.active, .input-tab.active { background: rgba(0,245,196,0.1); color: var(--accent); }
 .mode-tab:hover:not(.active), .input-tab:hover:not(.active) { background: rgba(255,255,255,0.04); }
 
+.input-tab { min-width: 0; font-size: 0.52rem; letter-spacing: 0.05em; }
+
+/* ── Cloud library ── */
+.library-block { margin-top: 4px; }
+.library-record-row { display: flex; gap: 8px; margin-top: 8px; }
+.library-record-row .btn { flex: 1; }
+.library-hint {
+  margin-top: 8px;
+  font-size: 0.55rem;
+  color: var(--dim);
+  line-height: 1.5;
+}
+.library-list-wrap {
+  margin-top: 10px;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: rgba(0,0,0,0.2);
+}
+.library-empty { padding: 12px; font-size: 0.6rem; color: var(--dim); text-align: center; }
+.library-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.62rem;
+}
+.library-row:last-child { border-bottom: 0; }
+.library-row.active { background: rgba(0,245,196,0.08); }
+.library-title {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: 0;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.62rem;
+  cursor: pointer;
+  text-align: left;
+  padding: 0;
+}
+.library-title:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.library-meta { color: var(--dim); font-size: 0.52rem; }
+.btn-tiny { flex: 0 0 auto; padding: 4px 8px; font-size: 0.55rem; min-width: auto; }
+
 .mode-desc {
   margin-top: 8px;
   font-size: 0.58rem;
