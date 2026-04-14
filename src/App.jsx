@@ -1,41 +1,97 @@
 import { useEffect, useRef, useState } from 'react';
 import './App.css';
 
-const loadScript = (src) =>
-  new Promise((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
+/** Wait until the script tag has actually finished loading (do not resolve early). */
+function loadScriptOnce(src) {
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${src}"]`);
+    if (existing) {
+      if (existing.getAttribute('data-mp-loaded') === 'true') {
+        resolve();
+        return;
+      }
+      existing.addEventListener('load', () => {
+        existing.setAttribute('data-mp-loaded', 'true');
+        resolve();
+      }, { once: true });
+      existing.addEventListener('error', () => reject(new Error(`Failed to load ${src}`)), { once: true });
+      return;
+    }
     const s = document.createElement('script');
     s.src = src;
     s.crossOrigin = 'anonymous';
-    s.onload = resolve;
+    s.async = true;
+    s.onload = () => {
+      s.setAttribute('data-mp-loaded', 'true');
+      resolve();
+    };
     s.onerror = () => reject(new Error(`Failed to load ${src}`));
     document.body.appendChild(s);
   });
+}
+
+/** Scripts can be in the DOM before `window.Hands` / `window.Camera` exist (race + Strict Mode). */
+function waitForMediaPipeGlobals(timeoutMs = 20000) {
+  return new Promise((resolve, reject) => {
+    const t0 = performance.now();
+    const tick = () => {
+      if (typeof window.Hands === 'function' && typeof window.Camera === 'function') {
+        resolve();
+        return;
+      }
+      if (performance.now() - t0 > timeoutMs) {
+        reject(new Error('MediaPipe globals (Hands / Camera) not available in time'));
+        return;
+      }
+      requestAnimationFrame(tick);
+    };
+    tick();
+  });
+}
 
 export default function App() {
   const [started, setStarted] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
   const [inputMode, setInputMode] = useState('file');
+  const [engineReady, setEngineReady] = useState(false);
   const refs = useRef({});
   const engineRef = useRef(null);
 
   useEffect(() => {
     let alive = true;
-    Promise.all([
-      loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js'),
-      loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js'),
-      loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js'),
-    ])
-      .then(() => { if (alive) engineRef.current = buildEngine(refs.current); })
-      .catch(() => {});
+
+    (async () => {
+      try {
+        await loadScriptOnce('https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js');
+        await loadScriptOnce('https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js');
+        await loadScriptOnce('https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js');
+        await waitForMediaPipeGlobals();
+        if (!alive) return;
+        // Defer one frame so callback-refs have committed (avoids rare null-ref build).
+        requestAnimationFrame(() => {
+          if (!alive) return;
+          try {
+            engineRef.current = buildEngine(refs.current);
+            setEngineReady(true);
+          } catch (e) {
+            console.error('buildEngine failed:', e);
+          }
+        });
+      } catch (e) {
+        console.error('MediaPipe script load failed:', e);
+      }
+    })();
+
     return () => {
       alive = false;
+      setEngineReady(false);
       engineRef.current?.destroy();
+      engineRef.current = null;
     };
   }, []);
 
   const handleStart = async () => {
-    if (!engineRef.current) return;
+    if (!engineReady || !engineRef.current) return;
     try {
       await engineRef.current.init();
       setStarted(true);
@@ -96,8 +152,13 @@ export default function App() {
           <div className="overlay">
             <div className="overlay-title">VENDY</div>
             <div className="overlay-sub">Gesture-Controlled Pitch Shifter</div>
-            <button className="start-btn" onClick={handleStart}>
-              Initialize System
+            <button
+              className="start-btn"
+              type="button"
+              onClick={handleStart}
+              disabled={!engineReady}
+            >
+              {engineReady ? 'Initialize System' : 'Loading…'}
             </button>
             <div className="overlay-note">
               Place <code>audio.mp3</code> in the <code>public/</code> folder, or use Mic Live mode.
