@@ -571,6 +571,246 @@ footer {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
+/* ── Harmony section ── */
+.harmony-section {
+  transition: opacity 0.3s;
+}
+.harmony-section.harmony-active {
+  border-left: 2px solid var(--accent);
+  padding-left: 10px;
+}
+.harmony-hint {
+  font-size: 0.6rem;
+  color: var(--dim);
+  line-height: 1.5;
+  margin: 6px 0 10px;
+  letter-spacing: 0.05em;
+}
+.harmony-hint strong { color: var(--text); }
+.finger-map {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.finger-slot {
+  background: rgba(0,245,196,0.04);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 8px 10px;
+  transition: border-color 0.2s;
+}
+.finger-slot:hover { border-color: var(--accent); }
+.finger-slot-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.finger-icon { font-size: 1.1rem; }
+.finger-label {
+  font-size: 0.62rem;
+  color: var(--text);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.finger-slot-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.semitone-input {
+  width: 54px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 0.78rem;
+  padding: 4px 6px;
+  border-radius: 2px;
+  text-align: center;
+}
+.semitone-input:focus { outline: none; border-color: var(--accent); }
+.semitone-unit {
+  font-size: 0.6rem;
+  color: var(--dim);
+  letter-spacing: 0.08em;
+}
+.harmony-quick-pick {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.6rem;
+  padding: 4px 6px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+.harmony-quick-pick:focus { outline: none; border-color: var(--accent); }
+.harmony-fist-hint {
+  font-size: 0.58rem;
+  color: var(--dim);
+  margin-top: 8px;
+  letter-spacing: 0.08em;
+  text-align: center;
+}
+
+/* Key / scale row */
+.harmony-key-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.harmony-key-row .harmony-quick-pick { flex: 1; }
+
+/* In-key badge */
+.in-key-badge {
+  font-size: 0.52rem;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  padding: 1px 6px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+/* Explanatory diatonic note */
+.harmony-diatonic-note {
+  font-size: 0.57rem;
+  color: var(--dim);
+  line-height: 1.55;
+  margin-top: 10px;
+  letter-spacing: 0.04em;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.harmony-diatonic-note strong { color: var(--text); }
+
+/* Dim the pitch section when in harmony/fingers mode */
+.harmony-dim {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+/* ── Countdown overlay ── */
+.countdown-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(5, 8, 16, 0.72);
+  z-index: 20;
+  pointer-events: none;
+}
+.countdown-number {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: clamp(6rem, 22vw, 14rem);
+  color: var(--accent);
+  text-shadow: var(--glow);
+  animation: cdPop 0.25s ease-out;
+}
+@keyframes cdPop {
+  from { transform: scale(1.5); opacity: 0; }
+  to   { transform: scale(1);   opacity: 1; }
+}
+
+/* ── Beat counter (during recording) ── */
+.beat-counter {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(5, 8, 16, 0.7);
+  border: 1px solid var(--accent2);
+  border-radius: 20px;
+  padding: 5px 14px;
+  z-index: 20;
+  pointer-events: none;
+}
+.beat-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent2);
+  box-shadow: 0 0 8px var(--accent2);
+  animation: beatPulse 0.5s ease-in-out infinite alternate;
+}
+@keyframes beatPulse {
+  from { opacity: 0.4; transform: scale(0.9); }
+  to   { opacity: 1;   transform: scale(1.2); }
+}
+.beat-label {
+  font-size: 0.65rem;
+  color: var(--accent2);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* ── Metronome settings ── */
+.metro-settings {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.metro-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+.metro-label {
+  font-size: 0.58rem;
+  color: var(--dim);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.metro-input {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 0.8rem;
+  padding: 5px 8px;
+  border-radius: 2px;
+  width: 100%;
+  text-align: center;
+}
+.metro-input:focus { outline: none; border-color: var(--accent); }
+.metro-input:disabled { opacity: 0.4; }
+.metro-select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.65rem;
+  padding: 5px 6px;
+  border-radius: 2px;
+  cursor: pointer;
+  width: 100%;
+}
+.metro-select:focus { outline: none; border-color: var(--accent); }
+.metro-select:disabled { opacity: 0.4; }
+
+/* ── btn.active.danger (recording active state) ── */
+.btn.active.danger {
+  background: rgba(255,75,110,0.15);
+  border-color: var(--accent2);
+  color: var(--accent2);
+  box-shadow: 0 0 14px rgba(255,75,110,0.3);
+  animation: recPulse 1s ease-in-out infinite alternate;
+}
+@keyframes recPulse {
+  from { box-shadow: 0 0 6px rgba(255,75,110,0.2); }
+  to   { box-shadow: 0 0 18px rgba(255,75,110,0.5); }
+}
+
 /* ════════════════════════════════
    MOBILE  ≤ 768 px
 ════════════════════════════════ */

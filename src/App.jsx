@@ -1,6 +1,31 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import './App.css';
 import { listRecordings, uploadRecording, deleteRecording, getPlaybackUrl } from './lib/vendyRecordingsApi.js';
+import { Player, PitchShift, setContext as setToneContext, ToneAudioBuffer } from 'tone';
+
+// ── Music theory constants ──
+const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+// Best-fit semitone offsets per finger slot for each scale type.
+// Chosen so each interval is diatonic (or near-diatonic) for the majority of scale degrees.
+const SCALE_PRESETS = {
+  major:      [4,  7,  9, 12],  // Maj3, P5, Maj6, Oct  — bright
+  minor:      [3,  7,  8, 12],  // Min3, P5, Min6, Oct  — darker
+  dorian:     [3,  7, 10, 12],  // Min3, P5, Min7, Oct  — jazzy
+  mixolydian: [4,  7, 10, 12],  // Maj3, P5, Min7, Oct  — bluesy
+  pentatonic: [3,  7, 10, 12],  // Min3, P5, Min7, Oct  — flexible
+  blues:      [3,  6, 10, 12],  // Min3, Tri, Min7, Oct — gritty
+};
+
+// Intervals that are stable / in-key for each scale (used for the "in key" badge)
+const DIATONIC_SAFE = {
+  major:      [4, 5, 7, 9, 12],
+  minor:      [3, 5, 7, 8, 12],
+  dorian:     [3, 5, 7, 9, 10, 12],
+  mixolydian: [4, 5, 7, 10, 12],
+  pentatonic: [3, 7, 10, 12],
+  blues:      [3, 6, 10, 12],
+};
 
 /** Wait until the script tag has actually finished loading (do not resolve early). */
 function loadScriptOnce(src) {
@@ -54,17 +79,28 @@ export default function App() {
   const [started, setStarted] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
   const [inputMode, setInputMode] = useState('file');
+  const [gestureMode, setGestureMode] = useState('y');
   const [engineReady, setEngineReady] = useState(false);
   const [recordings, setRecordings] = useState([]);
   const [recordingsLoading, setRecordingsLoading] = useState(false);
   const [recordingActive, setRecordingActive] = useState(false);
   const [uploadingRecording, setUploadingRecording] = useState(false);
   const [selectedRecordingId, setSelectedRecordingId] = useState(null);
+  // Harmony presets — semitone offsets per finger slot (0-indexed = 1 finger … 4 fingers)
+  const [harmonyPresets, setHarmonyPresets] = useState([3, 4, 7, 12]);
+  const [harmonyKey, setHarmonyKey] = useState('C');
+  const [harmonyScale, setHarmonyScale] = useState('major');
+  // Metronome
+  const [metroBpm, setMetroBpm] = useState(120);
+  const [metroCountIn, setMetroCountIn] = useState(1);
+  const [countdown, setCountdown] = useState(null);   // null | number | 'GO!'
+  const [recordBeat, setRecordBeat] = useState(null); // beat counter while recording
   const refs = useRef({});
   const engineRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const recordChunksRef = useRef([]);
   const recordStreamRef = useRef(null);
+  const metroIntervalRef = useRef(null);
 
   const refreshRecordings = useCallback(async () => {
     setRecordingsLoading(true);
@@ -88,6 +124,7 @@ export default function App() {
       try { mediaRecorderRef.current.stop(); } catch (_) {}
     }
     recordStreamRef.current?.getTracks().forEach((t) => t.stop());
+    if (metroIntervalRef.current) clearInterval(metroIntervalRef.current);
   }, []);
 
   useEffect(() => {
@@ -134,7 +171,7 @@ export default function App() {
   };
 
   const startMicRecording = async () => {
-    if (recordingActive || !started) return;
+    if (recordingActive || !started || countdown !== null) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       recordStreamRef.current = stream;
@@ -148,15 +185,62 @@ export default function App() {
       mr.ondataavailable = (e) => {
         if (e.data.size) recordChunksRef.current.push(e.data);
       };
+
+      const beatMs = Math.round(60000 / metroBpm);
+      const countInBeats = metroCountIn * 4; // 4/4 time
+
+      // Run countdown beats
+      const runCountdown = () =>
+        new Promise((resolve) => {
+          const beats = Array.from({ length: countInBeats }, (_, i) => countInBeats - i);
+          let idx = 0;
+          const tick = () => {
+            const beat = beats[idx];
+            const isDown = beat % 4 === 0 || beat === countInBeats;
+            setCountdown(beat <= 4 ? beat : null);
+            engineRef.current?.playClick(isDown);
+            idx++;
+            if (idx < beats.length) {
+              setTimeout(tick, beatMs);
+            } else {
+              setTimeout(() => {
+                setCountdown('GO!');
+                engineRef.current?.playClick(true);
+                setTimeout(resolve, beatMs);
+              }, beatMs);
+            }
+          };
+          tick();
+        });
+
+      await runCountdown();
+      setCountdown(null);
+
       mr.start(100);
       mediaRecorderRef.current = mr;
       setRecordingActive(true);
+      setRecordBeat(1);
+
+      let beat = 1;
+      metroIntervalRef.current = setInterval(() => {
+        beat++;
+        setRecordBeat(beat);
+        engineRef.current?.playClick(beat % 4 === 1);
+      }, beatMs);
     } catch (e) {
+      setCountdown(null);
       console.error('Record start failed:', e);
     }
   };
 
   const stopMicRecordingAndUpload = async () => {
+    // Stop metronome
+    if (metroIntervalRef.current) {
+      clearInterval(metroIntervalRef.current);
+      metroIntervalRef.current = null;
+    }
+    setRecordBeat(null);
+
     const mr = mediaRecorderRef.current;
     if (!mr || mr.state === 'inactive') return;
     await new Promise((resolve) => {
@@ -204,6 +288,23 @@ export default function App() {
       console.error('Delete failed:', e);
     }
   };
+
+  const handleHarmonyPresetChange = (slot, value) => {
+    const st = Math.max(-24, Math.min(24, Number(value)));
+    setHarmonyPresets((prev) => {
+      const next = [...prev];
+      next[slot] = st;
+      return next;
+    });
+    engineRef.current?.setHarmonyPreset(slot, st);
+  };
+
+  const handleFillForScale = useCallback((scale) => {
+    const s = scale ?? harmonyScale;
+    const presets = SCALE_PRESETS[s] ?? [3, 4, 7, 12];
+    setHarmonyPresets([...presets]);
+    presets.forEach((st, i) => engineRef.current?.setHarmonyPreset(i, st));
+  }, [harmonyScale]);
 
   return (
     <div id="app">
@@ -253,6 +354,21 @@ export default function App() {
           />
         </div>
 
+        {/* METRONOME COUNTDOWN OVERLAY */}
+        {countdown !== null && (
+          <div className="countdown-overlay">
+            <span className="countdown-number">{countdown}</span>
+          </div>
+        )}
+
+        {/* RECORDING BEAT COUNTER */}
+        {recordBeat !== null && (
+          <div className="beat-counter">
+            <span className="beat-dot" />
+            <span className="beat-label">BEAT {recordBeat} · {metroBpm} BPM</span>
+          </div>
+        )}
+
         {!started && (
           <div className="overlay">
             <div className="overlay-title">VENDY</div>
@@ -287,7 +403,7 @@ export default function App() {
         </div>
 
         {/* PITCH CONTROL */}
-        <div className="panel-section">
+        <div className={`panel-section${gestureMode === 'fingers' ? ' harmony-dim' : ''}`}>
           <div className="section-label">// Pitch Control</div>
           <div className="pitch-display">
             <div
@@ -337,9 +453,10 @@ export default function App() {
         <div className="panel-section">
           <div className="section-label">// Gesture Mode</div>
           <div className="mode-tabs" ref={(r) => { refs.current.modeTabs = r; }}>
-            <button className="mode-tab active" onClick={() => engineRef.current?.setMode('y')}>Y Axis</button>
-            <button className="mode-tab" onClick={() => engineRef.current?.setMode('spread')}>Spread</button>
-            <button className="mode-tab" onClick={() => engineRef.current?.setMode('wrist')}>Wrist</button>
+            <button className="mode-tab active" onClick={() => { engineRef.current?.setMode('y'); setGestureMode('y'); }}>Y Axis</button>
+            <button className="mode-tab" onClick={() => { engineRef.current?.setMode('spread'); setGestureMode('spread'); }}>Spread</button>
+            <button className="mode-tab" onClick={() => { engineRef.current?.setMode('wrist'); setGestureMode('wrist'); }}>Wrist</button>
+            <button className="mode-tab" onClick={() => { engineRef.current?.setMode('fingers'); setGestureMode('fingers'); }}>Harmony</button>
           </div>
           <div
             className="mode-desc"
@@ -348,6 +465,102 @@ export default function App() {
               __html: 'Move hand <strong>up/down</strong> to control pitch. Top of frame = highest pitch.',
             }}
           />
+        </div>
+
+        {/* HARMONY PRESETS */}
+        <div className={`panel-section harmony-section${gestureMode === 'fingers' ? ' harmony-active' : ''}`}>
+          <div className="section-label">// Harmony Presets</div>
+          <p className="harmony-hint">
+            Switch to <strong>Harmony</strong> mode above, load a cloud clip, then hold up fingers to play intervals. Uses Tone.js PitchShift — same BPM, different pitch.
+          </p>
+
+          {/* Key / Scale row */}
+          <div className="harmony-key-row">
+            <select
+              className="harmony-quick-pick"
+              value={harmonyKey}
+              onChange={(e) => setHarmonyKey(e.target.value)}
+            >
+              {NOTE_NAMES.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+            <select
+              className="harmony-quick-pick"
+              value={harmonyScale}
+              onChange={(e) => {
+                setHarmonyScale(e.target.value);
+                handleFillForScale(e.target.value);
+              }}
+            >
+              <option value="major">Major</option>
+              <option value="minor">Minor</option>
+              <option value="dorian">Dorian</option>
+              <option value="mixolydian">Mixolydian</option>
+              <option value="pentatonic">Pentatonic</option>
+              <option value="blues">Blues</option>
+            </select>
+            <button className="btn" style={{ flex: '0 0 auto', padding: '6px 10px' }} onClick={() => handleFillForScale()}>
+              Fill
+            </button>
+          </div>
+
+          <div className="finger-map">
+            {[
+              { finger: 1, label: 'Finger 1' },
+              { finger: 2, label: 'Finger 2' },
+              { finger: 3, label: 'Finger 3' },
+              { finger: 4, label: 'Finger 4' },
+            ].map(({ finger }, i) => {
+              const isInKey = DIATONIC_SAFE[harmonyScale]?.includes(Math.abs(harmonyPresets[i]));
+              return (
+                <div className="finger-slot" key={finger}>
+                  <div className="finger-slot-header">
+                    <span className="finger-icon">{'☝✌🤟🖖'[i]}</span>
+                    <span className="finger-label">
+                      {harmonyPresets[i] >= 0 ? `+${harmonyPresets[i]}` : harmonyPresets[i]} st
+                    </span>
+                    {isInKey && <span className="in-key-badge">in key</span>}
+                  </div>
+                  <div className="finger-slot-controls">
+                    <input
+                      type="number"
+                      className="semitone-input"
+                      min="-24"
+                      max="24"
+                      value={harmonyPresets[i]}
+                      onChange={(e) => handleHarmonyPresetChange(i, e.target.value)}
+                    />
+                    <span className="semitone-unit">st</span>
+                    <select
+                      className="harmony-quick-pick"
+                      value={harmonyPresets[i]}
+                      onChange={(e) => handleHarmonyPresetChange(i, e.target.value)}
+                    >
+                      <option value="-12">-12 Octave ↓</option>
+                      <option value="-7">-7 Fifth ↓</option>
+                      <option value="-5">-5 Fourth ↓</option>
+                      <option value="-4">-4 Maj 3rd ↓</option>
+                      <option value="-3">-3 Min 3rd ↓</option>
+                      <option value="3">+3 Min 3rd</option>
+                      <option value="4">+4 Maj 3rd</option>
+                      <option value="5">+5 Fourth</option>
+                      <option value="7">+7 Fifth</option>
+                      <option value="8">+8 Min 6th</option>
+                      <option value="9">+9 Maj 6th</option>
+                      <option value="10">+10 Min 7th</option>
+                      <option value="12">+12 Octave</option>
+                      <option value="24">+24 2x Oct</option>
+                    </select>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="harmony-fist-hint">Fist (0 fingers) = stop harmony</div>
+          <p className="harmony-diatonic-note">
+            <strong>Fill</strong> sets intervals diatonic to {harmonyKey} {harmonyScale}.
+            For melodies, a fixed shift is approximate — real-time pitch detection is needed for fully adaptive harmony.
+          </p>
         </div>
 
         {/* PLAYBACK */}
@@ -428,14 +641,43 @@ export default function App() {
           {inputMode === 'library' && (
             <div className="library-block">
               <div className="section-label" style={{ marginTop: 14 }}>// Cloud recordings</div>
+
+              {/* Metronome settings */}
+              <div className="metro-settings">
+                <div className="metro-field">
+                  <label className="metro-label">BPM</label>
+                  <input
+                    type="number"
+                    className="metro-input"
+                    min="40"
+                    max="240"
+                    value={metroBpm}
+                    onChange={(e) => setMetroBpm(Math.max(40, Math.min(240, Number(e.target.value))))}
+                    disabled={recordingActive || countdown !== null}
+                  />
+                </div>
+                <div className="metro-field">
+                  <label className="metro-label">Count-in</label>
+                  <select
+                    className="metro-select"
+                    value={metroCountIn}
+                    onChange={(e) => setMetroCountIn(Number(e.target.value))}
+                    disabled={recordingActive || countdown !== null}
+                  >
+                    <option value={1}>1 bar</option>
+                    <option value={2}>2 bars</option>
+                  </select>
+                </div>
+              </div>
+
               <div className="library-record-row">
                 <button
                   type="button"
-                  className="btn"
-                  disabled={!started || recordingActive || uploadingRecording}
+                  className={`btn${recordingActive ? ' active danger' : ''}`}
+                  disabled={!started || recordingActive || uploadingRecording || countdown !== null}
                   onClick={startMicRecording}
                 >
-                  ● Rec
+                  {countdown !== null ? `${countdown}` : '● Rec'}
                 </button>
                 <button
                   type="button"
@@ -446,7 +688,11 @@ export default function App() {
                   {uploadingRecording ? 'Uploading…' : '■ Stop & upload'}
                 </button>
               </div>
-              <p className="library-hint">Initialize the system first. Clips upload to Supabase (klary/vendy).</p>
+              <p className="library-hint">
+                {recordingActive
+                  ? `Recording… beat ${recordBeat ?? 1} · ${metroBpm} BPM`
+                  : 'Initialize the system first. Clips upload to Supabase (klary/vendy).'}
+              </p>
               <div className="library-list-wrap">
                 {recordingsLoading && <div className="library-empty">Loading…</div>}
                 {!recordingsLoading && recordings.length === 0 && (
@@ -543,6 +789,11 @@ function buildEngine(el) {
     hands: null,
     camera: null,
     rafId: null,
+    // ── Harmony ──
+    harmonicMode: false,
+    harmonyPresets: [3, 4, 7, 12],  // semitones per finger count 1–4
+    harmonySources: [],              // live AudioBufferSourceNodes for harmony
+    lastFingerCount: -1,
   };
 
   // ── VU bars ──
@@ -575,6 +826,52 @@ function buildEngine(el) {
   const updateTargetPitch = () => {
     const st = state.semitoneRange - state.handY * state.semitoneRange * 2;
     state.targetPitchRate = Math.pow(2, st / 12);
+  };
+
+  // ── Harmony helpers (Tone.js PitchShift — tempo-preserving, no chipmunk) ──
+  const startHarmony = (semitonesArr) => {
+    stopHarmony();
+    if (!state.audioBuffer || !state.audioCtx) return;
+    if (state.audioCtx.state === 'suspended') state.audioCtx.resume();
+
+    semitonesArr.forEach((st) => {
+      const toneBuffer = new ToneAudioBuffer(state.audioBuffer);
+      const player = new Player(toneBuffer);
+      // windowSize: 0.1 s — lower latency while keeping quality acceptable
+      const ps = new PitchShift({ pitch: st, windowSize: 0.1 });
+      player.connect(ps);
+      // Connect Tone output → native gain node (Tone's connect() accepts native AudioNode)
+      ps.connect(state.gainNode);
+      player.loop = true;
+      player.start();
+      state.harmonySources.push({ player, ps });
+    });
+
+    setDot(el.dotPlaying, 'active');
+    addLog(`Harmony (PitchShift): ${semitonesArr.map((s) => (s >= 0 ? `+${s}` : `${s}`)).join(', ')} st`, 'ok');
+  };
+
+  const stopHarmony = () => {
+    state.harmonySources.forEach(({ player, ps }) => {
+      try { player.stop(); player.dispose(); ps.dispose(); } catch (_) {}
+    });
+    state.harmonySources = [];
+    if (!state.isPlaying && !state.isMicLive) setDot(el.dotPlaying, '');
+    addLog('Harmony stopped.', 'info');
+  };
+
+  // ── Metronome click (called from React via API) ──
+  const playClick = (isDownbeat) => {
+    if (!state.audioCtx) return;
+    const osc = state.audioCtx.createOscillator();
+    const g = state.audioCtx.createGain();
+    osc.connect(g);
+    g.connect(state.audioCtx.destination);
+    osc.frequency.value = isDownbeat ? 880 : 660;
+    g.gain.setValueAtTime(0.5, state.audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, state.audioCtx.currentTime + 0.06);
+    osc.start();
+    osc.stop(state.audioCtx.currentTime + 0.06);
   };
 
   // ── Hand drawing ──
@@ -614,6 +911,26 @@ function buildEngine(el) {
   };
 
   const computeGesture = (landmarks) => {
+    if (state.gestureMode === 'fingers') {
+      // Count extended fingers: index/middle/ring/pinky tips vs their PIP joints
+      const tips = [8, 12, 16, 20];
+      const pips = [7, 11, 15, 19];
+      let count = 0;
+      tips.forEach((t, i) => {
+        if (landmarks[t].y < landmarks[pips[i]].y) count++;
+      });
+      if (count !== state.lastFingerCount) {
+        state.lastFingerCount = count;
+        if (count === 0) {
+          stopHarmony();
+        } else {
+          const preset = state.harmonyPresets[count - 1];
+          if (preset !== undefined) startHarmony([preset]);
+        }
+      }
+      return; // Y-axis pitch control intentionally skipped in fingers mode
+    }
+
     let val = 0.5;
     if (state.gestureMode === 'y') {
       val = landmarks[0].y;
@@ -899,6 +1216,7 @@ function buildEngine(el) {
       addLog('Hand tracking ready.', 'ok');
 
       state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      setToneContext(state.audioCtx); // share context with Tone.js so PitchShift nodes live on same graph
       state.gainNode = state.audioCtx.createGain();
       state.analyserNode = state.audioCtx.createAnalyser();
       state.analyserNode.fftSize = 256;
@@ -972,20 +1290,38 @@ function buildEngine(el) {
     },
 
     setMode(m) {
+      // Stop harmony if leaving fingers mode
+      if (state.gestureMode === 'fingers' && m !== 'fingers') {
+        stopHarmony();
+        state.lastFingerCount = -1;
+      }
       state.gestureMode = m;
       if (el.modeTabs) {
         Array.from(el.modeTabs.querySelectorAll('.mode-tab')).forEach((t) =>
           t.classList.remove('active')
         );
-        const idx = { y: 0, spread: 1, wrist: 2 }[m] ?? 0;
+        const idx = { y: 0, spread: 1, wrist: 2, fingers: 3 }[m] ?? 0;
         el.modeTabs.querySelectorAll('.mode-tab')[idx]?.classList.add('active');
       }
       const descs = {
         y: 'Move hand <strong>up/down</strong> to control pitch. Top of frame = highest pitch.',
         spread: 'Open/close fingers to control pitch. Wide open = high pitch, closed = low pitch.',
         wrist: 'Tilt your wrist left/right to control pitch.',
+        fingers: 'Hold up <strong>1–4 fingers</strong> to play harmony intervals. Fist = stop. Load a clip from Cloud first.',
       };
-      if (el.modeDesc) el.modeDesc.innerHTML = descs[m];
+      if (el.modeDesc) el.modeDesc.innerHTML = descs[m] ?? '';
+    },
+
+    setHarmonyPreset(slot, semitones) {
+      state.harmonyPresets[slot] = semitones;
+    },
+
+    playClick(isDownbeat) {
+      playClick(isDownbeat);
+    },
+
+    stopHarmony() {
+      stopHarmony();
     },
 
     setInputMode(mode) {
@@ -1007,6 +1343,7 @@ function buildEngine(el) {
       if (state.rafId) cancelAnimationFrame(state.rafId);
       if (state.isMicLive) stopMic();
       if (state.isPlaying) stopFile();
+      stopHarmony();
       state.camera?.stop();
       if (el.webcam?.srcObject) el.webcam.srcObject.getTracks().forEach((t) => t.stop());
       state.audioCtx?.close();
